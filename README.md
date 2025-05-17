@@ -1,4 +1,4 @@
-# moneyforward-csv-visualization
+# moneyforward-expense-csv-visualization
 マネーフォワード MEからダウンロードされる月別/年別の支出ファイルを可視化します。
 すべての処理はメモリ上で実施されます。
 
