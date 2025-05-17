@@ -18,12 +18,16 @@ cd moneyforward-csv-visualization
 ```
 uv venv
 ```
-3. uvで依存パッケージをインストールする。
+3. 仮想環境をアクティベートする。
+```
+source .venv/bin/activate
+```
+4. uvで依存パッケージをインストールする。
 ```
 uv sync
 ```
-4. streamlitで起動する。
+5. streamlitで起動する。
 ```
 streamlit run app.py
 ```
-5. ![localhost:8501](http://localhost:8501) にアクセスする。
+6. ![localhost:8501](http://localhost:8501) にアクセスする。
