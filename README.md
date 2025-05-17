@@ -4,13 +4,17 @@
 
 ![demo](https://raw.githubusercontent.com/wiki/yqhr/moneyforward-csv-visualization/images/demo.gif)
 
+## 実行環境
+- Python 3.13で確認
+- ![uv](https://github.com/astral-sh/uv)（高速なPythonパッケージマネージャー）
+
 ## 使い方
 1. このリポジトリをクローンします。
 ```
 git clone https://github.com/yqhr/moneyforward-csv-visualization
 cd moneyforward-csv-visualization
 ```
-2. ![uv](https://github.com/astral-sh/uv)で仮想環境を作成します。
+2. uvで仮想環境を作成します。
 ```
 uv venv
 ```
@@ -22,3 +26,4 @@ uv sync
 ```
 streamlit run app.py
 ```
+5. ![localhost:8501](http://localhost:8501) にアクセスする。
