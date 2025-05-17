@@ -1,5 +1,5 @@
 # moneyforward-csv-visualization
-Visualize csv of moneyforward
+Visualize csv of MoneyForward ME
 
 ## How to use
 ```
