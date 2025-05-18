@@ -450,24 +450,24 @@ if display_type == "Yearly":
     year_options: List[str] = sorted(expenses["year"].dropna().unique())
     year_options_int: List[int] = [int(y) for y in year_options]
 
-    # スライダー結果の注釈
-    slider_result: Tuple[int, int] = st.slider(
+    selected_years: List[int] = st.multiselect(
         "Select years",
-        min_value=min(year_options_int),
-        max_value=max(year_options_int),
-        value=(min(year_options_int), max(year_options_int)),
+        options=year_options_int,
+        default=[max(year_options_int)],  # デフォルトは最新の年
     )
-    start_year: int = slider_result[0]
-    end_year: int = slider_result[1]
+
+    if not selected_years:
+        st.warning("Please select at least one year to display data.")
+        st.stop()
 
     selected_year_label: str = (
-        f"{start_year}" if start_year == end_year else f"{start_year}–{end_year}"
+        f"{selected_years[0]}" if len(selected_years) == 1
+        else f"{min(selected_years)}–{max(selected_years)}"
     )
 
     # DataFrameの型を明示的に定義
     expenses_year: pd.DataFrame = expenses[
-        (expenses["year"].astype(int) >= start_year)
-        & (expenses["year"].astype(int) <= end_year)
+        expenses["year"].astype(int).isin(selected_years)
     ]
     summary: pd.DataFrame = (
         expenses_year.groupby("category_main")["amount"]
