@@ -44,7 +44,7 @@ def load_and_processed_data(files: List[UploadedFile]) -> Tuple[pd.DataFrame, pd
     con2.close()
     return expenses, refunds
 
-# File uploader
+# ファイルアップローダー
 files: List[UploadedFile] | None = st.file_uploader(
     "📤 Upload CSV files (multiple selection allowed)",
     type="csv",
@@ -59,7 +59,7 @@ expenses: pd.DataFrame
 refunds: pd.DataFrame
 expenses, refunds = load_and_processed_data(files)
 
-# Display type selection
+# 表示タイプの選択
 display_type: str = st.selectbox("Select display type", ["Monthly", "Yearly"])
 
 # 月別表示部分を修正
@@ -80,7 +80,7 @@ if display_type == "Monthly":
         else f"{selected_months[0]} and others"
     )
 
-    # Calculate net expense by category
+    # カテゴリー別の純支出を計算
     summary: pd.DataFrame = (
         expenses_month.groupby("category_main")["amount"]
         .sum()
@@ -95,11 +95,11 @@ if display_type == "Monthly":
         .reset_index()
     )
 
-    # Calculate percentage and cumulative
+    # パーセンテージと累積値を計算
     summary["percentage"] = summary["expense"] / summary["expense"].sum() * 100
     summary["cumulative_percentage"] = summary["percentage"].cumsum()
 
-    # Pareto chart
+    # パレート図
     fig = go.Figure()
     fig.add_bar(
         x=summary["category_main"],
@@ -144,15 +144,15 @@ if display_type == "Monthly":
         yref="y2",
         line=dict(color="red", width=2, dash="dash"),
     )
-    # --- Main category visualization with tabs (pie, bar, pareto, time series) ---
-    # Pie chart
+    # --- タブを使った主要カテゴリの可視化（円グラフ、棒グラフ、パレート図、時系列） ---
+    # 円グラフ
     fig_pie_main = go.Figure()
     fig_pie_main.add_trace(
         go.Pie(labels=summary["category_main"], values=summary["expense"], hole=0.4)
     )
     fig_pie_main.update_layout(title_text=f"Main Category Expense Composition - {selected_month_label}")
 
-    # Horizontal bar chart
+    # 水平棒グラフ
     fig_bar_main = go.Figure()
     fig_bar_main.add_trace(
         go.Bar(
@@ -169,7 +169,7 @@ if display_type == "Monthly":
         yaxis_title="",
     )
 
-    # Time series chart
+    # 時系列チャート
     ts_main: pd.DataFrame = (
         expenses_month[expenses_month["category_main"] == summary["category_main"].iloc[0]]
         .groupby("date")["amount"]
@@ -185,7 +185,7 @@ if display_type == "Monthly":
         title=f"Total Expense Time Series - {selected_month_label}",
     )
 
-    # Stacked area chart for monthly expenses
+    # 月次支出の積み上げエリアチャート
     monthly_portfolio: pd.DataFrame = (
         expenses_month
         .groupby(["date", "category_main"])["amount"]
@@ -194,7 +194,7 @@ if display_type == "Monthly":
         .reset_index()
     )
 
-    # Sort by date for proper display
+    # 正しく表示するために日付でソート
     monthly_portfolio = monthly_portfolio.sort_values("date")
 
     fig_stacked_area = px.area(
@@ -206,7 +206,7 @@ if display_type == "Monthly":
         labels={"amount": "Expense (JPY)", "date": "Date", "category_main": "Category"},
     )
 
-    # Add weekly stacked area chart
+    # 週次の積み上げエリアチャートを追加
     weekly_portfolio: pd.DataFrame = (
         expenses_month
         .assign(week=lambda x: pd.to_datetime(x["date"]).dt.strftime("%Y-%U"))
@@ -216,7 +216,7 @@ if display_type == "Monthly":
         .reset_index()
     )
 
-    # Convert week number to actual date (first day of week)
+    # 週番号を実際の日付（週の初日）に変換
     weekly_portfolio["week_date"] = pd.to_datetime(
         weekly_portfolio["week"].apply(
             lambda x: f"{x.split('-')[0]}-W{x.split('-')[1]}-1"
@@ -251,7 +251,7 @@ if display_type == "Monthly":
     with tab_m6:
         st.plotly_chart(fig_weekly_area, use_container_width=True)
 
-    # Main category selection and subcategory breakdown (pie chart + horizontal bar chart)
+    # メインカテゴリの選択とサブカテゴリの内訳（円グラフ + 水平棒グラフ）
     selected_category: str = st.selectbox(
         "Select a main category to view breakdown", summary["category_main"]
     )
@@ -338,7 +338,7 @@ if display_type == "Monthly":
             line=dict(color="red", width=2, dash="dash"),
         )
 
-        # Time series chart
+        # 時系列チャート
         ts_summary: pd.DataFrame = sub_data.copy()
         ts_summary["amount"] = ts_summary["amount"].abs()
         ts_summary = ts_summary.groupby("date")["amount"].sum().reset_index()
@@ -450,7 +450,7 @@ if display_type == "Yearly":
     year_options: List[str] = sorted(expenses["year"].dropna().unique())
     year_options_int: List[int] = [int(y) for y in year_options]
 
-    # Slider result annotation
+    # スライダー結果の注釈
     slider_result: Tuple[int, int] = st.slider(
         "Select years",
         min_value=min(year_options_int),
@@ -464,7 +464,7 @@ if display_type == "Yearly":
         f"{start_year}" if start_year == end_year else f"{start_year}–{end_year}"
     )
 
-    # DataFrame type explicitly defined
+    # DataFrameの型を明示的に定義
     expenses_year: pd.DataFrame = expenses[
         (expenses["year"].astype(int) >= start_year)
         & (expenses["year"].astype(int) <= end_year)
@@ -529,15 +529,15 @@ if display_type == "Yearly":
         yref="y2",
         line=dict(color="red", width=2, dash="dash"),
     )
-    # --- Main category visualization with tabs (pie, bar, pareto, time series) ---
-    # Pie chart
+    # --- タブを使った主要カテゴリの可視化（円グラフ、棒グラフ、パレート図、時系列） ---
+    # 円グラフ
     fig_pie_main = go.Figure()
     fig_pie_main.add_trace(
         go.Pie(labels=summary["category_main"], values=summary["expense"], hole=0.4)
     )
     fig_pie_main.update_layout(title_text=f"Main Category Expense Composition - {selected_year_label}")
 
-    # Horizontal bar chart
+    # 水平棒グラフ
     fig_bar_main = go.Figure()
     fig_bar_main.add_trace(
         go.Bar(
@@ -554,7 +554,7 @@ if display_type == "Yearly":
         yaxis_title="",
     )
 
-    # Time series chart
+    # 時系列チャート
     ts_main: pd.DataFrame = (
         expenses_year[expenses_year["category_main"] == summary["category_main"].iloc[0]]
         .groupby("date")["amount"]
@@ -570,7 +570,7 @@ if display_type == "Yearly":
         title=f"Total Expense Time Series - {selected_year_label}",
     )
 
-    # Stacked area chart for yearly expenses by month
+    # 月別の年間支出の積み上げエリアチャート
     yearly_portfolio: pd.DataFrame = (
         expenses_year
         .groupby(["month", "category_main"])["amount"]
@@ -579,7 +579,7 @@ if display_type == "Yearly":
         .reset_index()
     )
 
-    # Sort by date so the chart displays correctly
+    # 日付順にソートしてグラフが正しく表示されるようにする
     yearly_portfolio["month_date"] = pd.to_datetime(yearly_portfolio["month"] + "-01")
     yearly_portfolio = yearly_portfolio.sort_values("month_date")
 
@@ -592,7 +592,7 @@ if display_type == "Yearly":
         labels={"amount": "Expense (JPY)", "month": "Month", "category_main": "Category"},
     )
 
-    # Add weekly stacked area chart
+    # 週ごとの積み上げ面グラフを追加
     weekly_yearly_portfolio: pd.DataFrame = (
         expenses_year
         .assign(week=lambda x: pd.to_datetime(x["date"]).dt.strftime("%Y-%U"))
@@ -602,7 +602,7 @@ if display_type == "Yearly":
         .reset_index()
     )
 
-    # Convert week number to actual date
+    # 週番号を実際の日付に変換
     weekly_yearly_portfolio["week_date"] = pd.to_datetime(
         weekly_yearly_portfolio["week"].apply(
             lambda x: f"{x.split('-')[0]}-W{x.split('-')[1]}-1"
@@ -619,7 +619,7 @@ if display_type == "Yearly":
         labels={"amount": "Expense (JPY)", "week": "Week", "category_main": "Category"},
     )
 
-    # Create a new tab for portfolio charts
+    # ポートフォリオチャート用の新しいタブを作成
     tab_m1, tab_m2, tab_m3, tab_m4, tab_m5, tab_m6 = st.tabs(
         ["Pie Chart", "Horizontal Bar Chart", "Pareto Chart", "Time Series Chart",
          "Monthly Portfolio", "Weekly Portfolio"]
