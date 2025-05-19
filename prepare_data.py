@@ -1,7 +1,6 @@
 import pandas as pd
 import duckdb
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics.pairwise import cosine_similarity
+from rapidfuzz import fuzz
 from typing import Dict, Set, List
 from streamlit.runtime.uploaded_file_manager import UploadedFile
 
@@ -54,15 +53,54 @@ def prepare_and_save_data(con: duckdb.DuckDBPyConnection) -> duckdb.DuckDBPyConn
 
     candidates: pd.DataFrame = con.execute(
         """
+        -- ① 計算済みテーブルをセッション内に作成
+        CREATE TEMP TABLE expenses_pre AS
+        SELECT
+            id,
+            description,
+            date,
+            ABS(amount) AS abs_amount
+        FROM expenses;
+
+        CREATE TEMP TABLE refunds_pre AS
+        SELECT
+            id,
+            description,
+            date,
+            ABS(amount) AS abs_amount
+        FROM refunds;
+
+        -- ② 範囲検索に効くインデックスを貼る
+        CREATE INDEX idx_expenses_abs_date ON expenses_pre(abs_amount, date);
+        CREATE INDEX idx_refunds_abs_date  ON refunds_pre (abs_amount, date);
+
+        -- ③ JOIN クエリ（±100 円の例）
         SELECT
             e.id AS expense_id,
             r.id AS refund_id,
             e.description AS expense_description,
             r.description AS refund_description
-        FROM expenses e
-        JOIN refunds r
-            ON ABS(e.amount) BETWEEN ABS(r.amount) - 100 AND ABS(r.amount) + 100
-            AND ABS(DATEDIFF('day', e.date, r.date)) <= 14
+        FROM expenses_pre e
+        JOIN refunds_pre  r
+        ON r.date BETWEEN e.date - INTERVAL '14 DAY'
+                       AND e.date + INTERVAL '14 DAY'
+        AND r.abs_amount BETWEEN e.abs_amount - 100
+                              AND e.abs_amount + 100
+
+        UNION ALL
+
+        -- ④ ±5 %
+        SELECT
+            e.id,
+            r.id,
+            e.description,
+            r.description
+        FROM expenses_pre e
+        JOIN refunds_pre  r
+        ON r.date BETWEEN e.date - INTERVAL '14 DAY'
+                       AND e.date + INTERVAL '14 DAY'
+        AND r.abs_amount BETWEEN e.abs_amount * 0.95
+                              AND e.abs_amount * 1.05;
         """
     ).df()
 
@@ -72,21 +110,17 @@ def prepare_and_save_data(con: duckdb.DuckDBPyConnection) -> duckdb.DuckDBPyConn
     for _, row in candidates.iterrows():
         if row["refund_id"] in matched_refund_ids:
             continue
-        desc1: str = clean(row["expense_description"])
-        desc2: str = clean(row["refund_description"])
+        desc1 = clean(row["expense_description"])
+        desc2 = clean(row["refund_description"])
 
         if not desc1 or not desc2 or desc1.lower() == "nan" or desc2.lower() == "nan":
             continue
 
-        combined: List[str] = [desc1, desc2]
+        combined = [desc1, desc2]
         if all(len(word) < 2 for doc in combined for word in doc.split()):
             continue
 
-        try:
-            vec = TfidfVectorizer().fit_transform([desc1, desc2])
-            sim: float = cosine_similarity(vec[0], vec[1])[0][0]
-        except ValueError:
-            continue
+        sim = fuzz.token_set_ratio(desc1, desc2) / 100.0
         if sim >= 0.8:
             matched_refund_ids.add(row["refund_id"])
             canceled_expense_ids.add(row["expense_id"])
