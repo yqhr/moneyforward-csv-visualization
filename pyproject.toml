@@ -8,11 +8,8 @@ dependencies = [
     "duckdb>=1.2.2",
     "fireducks>=1.2.8",
     "fsspec>=2025.3.2",
-    "nkf>=1.0.4",
-    "pandas>=2.2.3",
     "plotly>=6.0.1",
     "rapidfuzz>=3.13.0",
-    "scikit-learn>=1.6.1",
     "streamlit>=1.45.0",
     "watchdog>=6.0.0",
 ]
