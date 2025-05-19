@@ -1,4 +1,4 @@
-import pandas as pd
+import fireducks.pandas as pd
 import duckdb
 from rapidfuzz import fuzz
 from typing import Dict, Set, List

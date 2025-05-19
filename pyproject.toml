@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "duckdb>=1.2.2",
+    "fireducks>=1.2.8",
     "fsspec>=2025.3.2",
     "nkf>=1.0.4",
     "pandas>=2.2.3",

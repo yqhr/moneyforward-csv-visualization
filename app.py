@@ -3,7 +3,7 @@ import plotly.graph_objects as go
 import plotly.express as px
 from prepare_data import prepare_and_save_data, convert_mf_csv_to_duckdb
 import duckdb
-import pandas as pd
+import fireducks.pandas as pd
 from typing import List, Tuple, Optional
 from streamlit.runtime.uploaded_file_manager import UploadedFile
 
