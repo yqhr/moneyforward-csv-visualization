@@ -233,10 +233,27 @@ if display_type == "Monthly":
         labels={"amount": "Expense (JPY)", "week_date": "Week", "category_main": "Category"},
     )
 
+    # 箱ひげ図
+    # 日付ごとのカテゴリ別データを準備
+    daily_by_category = expenses_month.copy()
+    daily_by_category["amount"] = daily_by_category["amount"].abs()
+    # 大項目ごとの箱ひげ図
+    fig_box_main = px.box(
+        daily_by_category,
+        x="category_main",
+        y="amount",
+        title=f"Expense Distribution (By Main Category) - {selected_month_label}",
+        labels={"category_main": "Category", "amount": "Expense (JPY)"}
+    )
+    fig_box_main.update_layout(
+        xaxis_title="Category",
+        yaxis_title="Expense (JPY)",
+        height=500
+    )
     # タブを更新
-    tab_m1, tab_m2, tab_m3, tab_m4, tab_m5, tab_m6 = st.tabs(
+    tab_m1, tab_m2, tab_m3, tab_m4, tab_m5, tab_m6, tab_m7 = st.tabs(
         ["Pie Chart", "Horizontal Bar Chart", "Pareto Chart", "Time Series Chart",
-         "Monthly Portfolio", "Weekly Portfolio"]
+         "Monthly Portfolio", "Weekly Portfolio", "Box Plot"]
     )
     with tab_m1:
         st.plotly_chart(fig_pie_main, use_container_width=True)
@@ -250,6 +267,8 @@ if display_type == "Monthly":
         st.plotly_chart(fig_stacked_area, use_container_width=True)
     with tab_m6:
         st.plotly_chart(fig_weekly_area, use_container_width=True)
+    with tab_m7:
+        st.plotly_chart(fig_box_main, use_container_width=True)
 
     # メインカテゴリの選択とサブカテゴリの内訳（円グラフ + 水平棒グラフ）
     selected_category: str = st.selectbox(
@@ -399,10 +418,26 @@ if display_type == "Monthly":
             labels={"amount": "Expense (JPY)", "week_date": "Week", "category_sub": "Subcategory"},
         )
 
+        # 中項目の箱ひげ図
+        sub_data_for_box = sub_data.copy()
+        sub_data_for_box["amount"] = sub_data_for_box["amount"].abs()
+        fig_box_sub = px.box(
+            sub_data_for_box,
+            x="category_sub",
+            y="amount",
+            title=f"{selected_category} Subcategory Distribution - {selected_month_label}",
+            labels={"category_sub": "Subcategory", "amount": "Expense (JPY)"}
+        )
+        fig_box_sub.update_layout(
+            xaxis_title="Subcategory",
+            yaxis_title="Expense (JPY)",
+            height=400
+        )
+
         # 中項目のタブ名を更新（"Daily Portfolio"→"Monthly Portfolio"）
-        tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(
+        tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(
             ["Pie Chart", "Bar Chart", "Pareto Chart", "Time Series Chart",
-             "Monthly Portfolio", "Weekly Portfolio"]
+             "Monthly Portfolio", "Weekly Portfolio", "Box Plot"]
         )
 
         with tab1:
@@ -417,6 +452,8 @@ if display_type == "Monthly":
             st.plotly_chart(fig_sub_monthly_area, use_container_width=True)
         with tab6:
             st.plotly_chart(fig_sub_weekly_area, use_container_width=True)
+        with tab7:
+            st.plotly_chart(fig_box_sub, use_container_width=True)
 
         with st.container():
             detail_df: pd.DataFrame = expenses_month[
@@ -619,10 +656,27 @@ if display_type == "Yearly":
         labels={"amount": "Expense (JPY)", "week": "Week", "category_main": "Category"},
     )
 
-    # ポートフォリオチャート用の新しいタブを作成
-    tab_m1, tab_m2, tab_m3, tab_m4, tab_m5, tab_m6 = st.tabs(
+    # 箱ひげ図
+    # 日付ごとのカテゴリ別データを準備
+    daily_by_category = expenses_year.copy()
+    daily_by_category["amount"] = daily_by_category["amount"].abs()
+    # 大項目ごとの箱ひげ図
+    fig_box_main = px.box(
+        daily_by_category,
+        x="category_main",
+        y="amount",
+        title=f"Expense Distribution (By Main Category) - {selected_year_label}",
+        labels={"category_main": "Category", "amount": "Expense (JPY)"}
+    )
+    fig_box_main.update_layout(
+        xaxis_title="Category",
+        yaxis_title="Expense (JPY)",
+        height=500
+    )
+
+    tab_m1, tab_m2, tab_m3, tab_m4, tab_m5, tab_m6, tab_m7 = st.tabs(
         ["Pie Chart", "Horizontal Bar Chart", "Pareto Chart", "Time Series Chart",
-         "Monthly Portfolio", "Weekly Portfolio"]
+         "Monthly Portfolio", "Weekly Portfolio", "Box Plot"]
     )
     with tab_m1:
         st.plotly_chart(fig_pie_main, use_container_width=True)
@@ -636,6 +690,8 @@ if display_type == "Yearly":
         st.plotly_chart(fig_stacked_area, use_container_width=True)
     with tab_m6:
         st.plotly_chart(fig_weekly_yearly_area, use_container_width=True)
+    with tab_m7:
+        st.plotly_chart(fig_box_main, use_container_width=True)
 
     selected_category: str = st.selectbox(
         "Select a main category to view breakdown", summary["category_main"]
@@ -785,10 +841,25 @@ if display_type == "Yearly":
             labels={"amount": "Expense (JPY)", "week_date": "Week", "category_sub": "Subcategory"},
         )
 
-        # タブを更新
-        tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(
+        # 中項目の箱ひげ図
+        sub_data_for_box = sub_data.copy()
+        sub_data_for_box["amount"] = sub_data_for_box["amount"].abs()
+        fig_box_sub = px.box(
+            sub_data_for_box,
+            x="category_sub",
+            y="amount",
+            title=f"{selected_category} Subcategory Distribution - {selected_year_label}",
+            labels={"category_sub": "Subcategory", "amount": "Expense (JPY)"}
+        )
+        fig_box_sub.update_layout(
+            xaxis_title="Subcategory",
+            yaxis_title="Expense (JPY)",
+            height=400
+        )
+
+        tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(
             ["Pie Chart", "Bar Chart", "Pareto Chart", "Time Series Chart",
-             "Monthly Portfolio", "Weekly Portfolio"]
+             "Monthly Portfolio", "Weekly Portfolio", "Box Plot"]
         )
 
         with tab1:
@@ -803,6 +874,8 @@ if display_type == "Yearly":
             st.plotly_chart(fig_sub_monthly_area, use_container_width=True)
         with tab6:
             st.plotly_chart(fig_sub_weekly_area, use_container_width=True)
+        with tab7:
+            st.plotly_chart(fig_box_sub, use_container_width=True)
 
         with st.container():
             detail_df: pd.DataFrame = expenses_year[
