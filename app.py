@@ -62,7 +62,7 @@ expenses, refunds = load_and_processed_data(files)
 # 表示タイプの選択
 display_type: str = st.selectbox("Select display type", ["Monthly", "Yearly"])
 
-# 月別表示部分を修正
+# 月別表示部分
 if display_type == "Monthly":
     month_options: List[str] = sorted(expenses["month"].dropna().unique())
     selected_months: List[str] = st.multiselect(
@@ -169,22 +169,6 @@ if display_type == "Monthly":
         yaxis_title="",
     )
 
-    # 時系列チャート
-    ts_main: pd.DataFrame = (
-        expenses_month[expenses_month["category_main"] == summary["category_main"].iloc[0]]
-        .groupby("date")["amount"]
-        .sum()
-        .abs()
-        .reset_index(name="expense")
-    )
-    fig_ts_main = px.line(
-        ts_main.sort_values("date"),
-        x="date",
-        y="expense",
-        markers=True,
-        title=f"Total Expense Time Series - {selected_month_label}",
-    )
-
     # 月次支出の積み上げエリアチャート
     monthly_portfolio: pd.DataFrame = (
         expenses_month
@@ -251,9 +235,8 @@ if display_type == "Monthly":
         height=500
     )
     # タブを更新
-    tab_m1, tab_m2, tab_m3, tab_m4, tab_m5, tab_m6, tab_m7 = st.tabs(
-        ["Pie Chart", "Horizontal Bar Chart", "Pareto Chart", "Time Series Chart",
-         "Monthly Portfolio", "Weekly Portfolio", "Box Plot"]
+    tab_m1, tab_m2, tab_m3, tab_m4, tab_m5, tab_m6 = st.tabs(
+        ["Pie Chart", "Horizontal Bar Chart", "Pareto Chart", "Monthly Portfolio", "Weekly Portfolio", "Box Plot"]
     )
     with tab_m1:
         st.plotly_chart(fig_pie_main, use_container_width=True)
@@ -262,12 +245,10 @@ if display_type == "Monthly":
     with tab_m3:
         st.plotly_chart(fig, use_container_width=True)
     with tab_m4:
-        st.plotly_chart(fig_ts_main, use_container_width=True)
-    with tab_m5:
         st.plotly_chart(fig_stacked_area, use_container_width=True)
-    with tab_m6:
+    with tab_m5:
         st.plotly_chart(fig_weekly_area, use_container_width=True)
-    with tab_m7:
+    with tab_m6:
         st.plotly_chart(fig_box_main, use_container_width=True)
 
     # メインカテゴリの選択とサブカテゴリの内訳（円グラフ + 水平棒グラフ）
@@ -357,18 +338,6 @@ if display_type == "Monthly":
             line=dict(color="red", width=2, dash="dash"),
         )
 
-        # 時系列チャート
-        ts_summary: pd.DataFrame = sub_data.copy()
-        ts_summary["amount"] = ts_summary["amount"].abs()
-        ts_summary = ts_summary.groupby("date")["amount"].sum().reset_index()
-        fig_ts = px.line(
-            ts_summary,
-            x="date",
-            y="amount",
-            markers=True,
-            title=f"{selected_category} Expense Time Series - {selected_month_label}",
-        )
-
         # サブカテゴリの月次積み上げエリアチャート
         sub_monthly_portfolio: pd.DataFrame = (
             sub_data
@@ -434,10 +403,9 @@ if display_type == "Monthly":
             height=400
         )
 
-        # 中項目のタブ名を更新（"Daily Portfolio"→"Monthly Portfolio"）
-        tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(
-            ["Pie Chart", "Bar Chart", "Pareto Chart", "Time Series Chart",
-             "Monthly Portfolio", "Weekly Portfolio", "Box Plot"]
+        # 中項目のタブ名
+        tab1, tab2, tab3, tab4, tab5, tab6, = st.tabs(
+            ["Pie Chart", "Bar Chart", "Pareto Chart", "Monthly Portfolio", "Weekly Portfolio", "Box Plot"]
         )
 
         with tab1:
@@ -447,12 +415,10 @@ if display_type == "Monthly":
         with tab3:
             st.plotly_chart(fig_pareto, use_container_width=True)
         with tab4:
-            st.plotly_chart(fig_ts, use_container_width=True)
-        with tab5:
             st.plotly_chart(fig_sub_monthly_area, use_container_width=True)
-        with tab6:
+        with tab5:
             st.plotly_chart(fig_sub_weekly_area, use_container_width=True)
-        with tab7:
+        with tab6:
             st.plotly_chart(fig_box_sub, use_container_width=True)
 
         with st.container():
@@ -480,6 +446,24 @@ if display_type == "Monthly":
             detail_df = detail_df.sort_values("date")
             st.markdown("#### Transaction Details")
             st.data_editor(detail_df, use_container_width=True, height=300)
+
+            detail_df_desc = detail_df.copy()
+            detail_df_desc["amount"] = detail_df_desc["amount"].abs()
+
+            fig_box_desc = px.box(
+                detail_df_desc,
+                x="description",
+                y="amount",
+                title=f"{selected_category} Description Distribution - {selected_month_label}",
+                labels={"description": "Description", "amount": "Expense (JPY)"}
+            )
+            fig_box_desc.update_layout(
+                xaxis_title="Description",
+                yaxis_title="Expense (JPY)",
+                height=300
+            )
+            st.plotly_chart(fig_box_desc, use_container_width=True)
+
     else:
         st.info("No subcategory data found.")
 
@@ -591,22 +575,6 @@ if display_type == "Yearly":
         yaxis_title="",
     )
 
-    # 時系列チャート
-    ts_main: pd.DataFrame = (
-        expenses_year[expenses_year["category_main"] == summary["category_main"].iloc[0]]
-        .groupby("date")["amount"]
-        .sum()
-        .abs()
-        .reset_index(name="expense")
-    )
-    fig_ts_main = px.line(
-        ts_main.sort_values("date"),
-        x="date",
-        y="expense",
-        markers=True,
-        title=f"Total Expense Time Series - {selected_year_label}",
-    )
-
     # 月別の年間支出の積み上げエリアチャート
     yearly_portfolio: pd.DataFrame = (
         expenses_year
@@ -674,9 +642,8 @@ if display_type == "Yearly":
         height=500
     )
 
-    tab_m1, tab_m2, tab_m3, tab_m4, tab_m5, tab_m6, tab_m7 = st.tabs(
-        ["Pie Chart", "Horizontal Bar Chart", "Pareto Chart", "Time Series Chart",
-         "Monthly Portfolio", "Weekly Portfolio", "Box Plot"]
+    tab_m1, tab_m2, tab_m3, tab_m4, tab_m5, tab_m6 = st.tabs(
+        ["Pie Chart", "Horizontal Bar Chart", "Pareto Chart", "Monthly Portfolio", "Weekly Portfolio", "Box Plot"]
     )
     with tab_m1:
         st.plotly_chart(fig_pie_main, use_container_width=True)
@@ -685,12 +652,10 @@ if display_type == "Yearly":
     with tab_m3:
         st.plotly_chart(fig, use_container_width=True)
     with tab_m4:
-        st.plotly_chart(fig_ts_main, use_container_width=True)
-    with tab_m5:
         st.plotly_chart(fig_stacked_area, use_container_width=True)
-    with tab_m6:
+    with tab_m5:
         st.plotly_chart(fig_weekly_yearly_area, use_container_width=True)
-    with tab_m7:
+    with tab_m6:
         st.plotly_chart(fig_box_main, use_container_width=True)
 
     selected_category: str = st.selectbox(
@@ -779,19 +744,6 @@ if display_type == "Yearly":
             line=dict(color="red", width=2, dash="dash"),
         )
 
-        # 年別表示の中項目表示部分を修正
-        # 時系列チャート
-        ts_summary: pd.DataFrame = sub_data.copy()
-        ts_summary["amount"] = ts_summary["amount"].abs()
-        ts_summary = ts_summary.groupby("date")["amount"].sum().reset_index()
-        fig_ts = px.line(
-            ts_summary,
-            x="date",
-            y="amount",
-            markers=True,
-            title=f"{selected_category} Expense Time Series - {selected_year_label}",
-        )
-
         # サブカテゴリの月次積み上げエリアチャート
         sub_monthly_portfolio: pd.DataFrame = (
             sub_data
@@ -857,9 +809,8 @@ if display_type == "Yearly":
             height=400
         )
 
-        tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(
-            ["Pie Chart", "Bar Chart", "Pareto Chart", "Time Series Chart",
-             "Monthly Portfolio", "Weekly Portfolio", "Box Plot"]
+        tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(
+            ["Pie Chart", "Bar Chart", "Pareto Chart", "Monthly Portfolio", "Weekly Portfolio", "Box Plot"]
         )
 
         with tab1:
@@ -869,12 +820,10 @@ if display_type == "Yearly":
         with tab3:
             st.plotly_chart(fig_pareto, use_container_width=True)
         with tab4:
-            st.plotly_chart(fig_ts, use_container_width=True)
-        with tab5:
             st.plotly_chart(fig_sub_monthly_area, use_container_width=True)
-        with tab6:
+        with tab5:
             st.plotly_chart(fig_sub_weekly_area, use_container_width=True)
-        with tab7:
+        with tab6:
             st.plotly_chart(fig_box_sub, use_container_width=True)
 
         with st.container():
@@ -902,5 +851,22 @@ if display_type == "Yearly":
             detail_df = detail_df.sort_values("date")
             st.markdown("#### Transaction Details")
             st.data_editor(detail_df, use_container_width=True, height=300)
+
+            detail_df_desc = detail_df.copy()
+            detail_df_desc["amount"] = detail_df_desc["amount"].abs()
+
+            fig_box_desc = px.box(
+                detail_df_desc,
+                x="description",
+                y="amount",
+                title=f"{selected_category} Description Distribution - {selected_year_label}",
+                labels={"description": "Description", "amount": "Expense (JPY)"}
+            )
+            fig_box_desc.update_layout(
+                xaxis_title="Description",
+                yaxis_title="Expense (JPY)",
+                height=300
+            )
+            st.plotly_chart(fig_box_desc, use_container_width=True)
     else:
         st.info("No subcategory data found.")
