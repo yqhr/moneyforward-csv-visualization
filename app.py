@@ -4,7 +4,7 @@ import plotly.express as px
 from prepare_data import prepare_and_save_data, convert_mf_csv_to_duckdb
 import duckdb
 import polars as pl
-from typing import List, Tuple, Optional
+from typing import List, Tuple
 from streamlit.runtime.uploaded_file_manager import UploadedFile
 
 st.set_page_config(page_title="Expense Analysis", layout="wide")
