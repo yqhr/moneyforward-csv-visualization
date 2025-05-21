@@ -1,8 +1,10 @@
-import fireducks.pandas as pd
+import polars as pl
 import duckdb
 from rapidfuzz import fuzz
 from typing import Dict, Set, List
 from streamlit.runtime.uploaded_file_manager import UploadedFile
+import tempfile
+import os
 
 COLUMN_MAP: Dict[str, str] = {
     "計算対象":   "include",
@@ -19,31 +21,46 @@ COLUMN_MAP: Dict[str, str] = {
 
 def convert_mf_csv_to_duckdb(files: List[UploadedFile]) -> duckdb.DuckDBPyConnection:
     con: duckdb.DuckDBPyConnection = duckdb.connect()
-    for idx, f in enumerate(files):
-        rel = con.read_csv(
-            f,
-            header=True,
-            sample_size=-1
-        )
 
-        select_expr: str = ",\n            ".join(
-            f'"{jp}" AS {en}' for jp, en in COLUMN_MAP.items()
-        )
-        rel = con.sql(f"SELECT {select_expr} FROM rel")
+    # 一時ディレクトリを作成
+    with tempfile.TemporaryDirectory() as temp_dir:
+        for idx, f in enumerate(files):
+            # 一時ファイルパスを作成
+            temp_file_path = os.path.join(temp_dir, f"temp_csv_{idx}.csv")
 
-        if idx == 0:
-            rel.create("transactions")
-        else:
-            con.sql("INSERT INTO transactions SELECT * FROM rel")
+            # アップロードされたファイルの内容を一時ファイルに書き込む
+            with open(temp_file_path, 'wb') as temp_file:
+                temp_file.write(f.read())
+
+            # ファイルポインタをリセット（他の場所でも使用できるように）
+            f.seek(0)
+
+            # DuckDBに一時ファイルを読み込ませる
+            rel = con.read_csv(
+                temp_file_path,
+                header=True,
+                sample_size=-1
+            )
+
+            select_expr: str = ",\n            ".join(
+                f'"{jp}" AS {en}' for jp, en in COLUMN_MAP.items()
+            )
+            rel = con.sql(f"SELECT {select_expr} FROM rel")
+
+            if idx == 0:
+                rel.create("transactions")
+            else:
+                con.sql("INSERT INTO transactions SELECT * FROM rel")
 
     return con
 
 def prepare_and_save_data(con: duckdb.DuckDBPyConnection) -> duckdb.DuckDBPyConnection:
     def clean(text: str) -> str:
-        if pd.isnull(text):
+        if text is None or isinstance(text, float) and pl.Series([text]).is_null().item():
             return ""
         return str(text).strip().replace("　", "")
 
+    # トランザクションから支出と返金を分離
     con.sql(
         "CREATE OR REPLACE TABLE expenses AS SELECT * FROM transactions WHERE include = 1 AND amount < 0;"
     )
@@ -51,7 +68,8 @@ def prepare_and_save_data(con: duckdb.DuckDBPyConnection) -> duckdb.DuckDBPyConn
         "CREATE OR REPLACE TABLE refunds AS SELECT * FROM transactions WHERE include = 1 AND amount > 0;"
     )
 
-    candidates: pd.DataFrame = con.execute(
+    # 返金が支出のキャンセルである候補を検索
+    candidates = con.execute(
         """
         -- ① 計算済みテーブルをセッション内に作成
         CREATE TEMP TABLE expenses_pre AS
@@ -102,14 +120,17 @@ def prepare_and_save_data(con: duckdb.DuckDBPyConnection) -> duckdb.DuckDBPyConn
         AND r.abs_amount BETWEEN e.abs_amount * 0.95
                               AND e.abs_amount * 1.05;
         """
-    ).df()
+    ).pl()  # duckdb結果をpolarsデータフレームとして取得
 
+    # 一致した返金IDと対応する支出IDを保持する集合
     matched_refund_ids: Set[str] = set()
     canceled_expense_ids: Set[str] = set()
 
-    for _, row in candidates.iterrows():
+    # 各候補の説明文の類似度を計算して、キャンセルと見なすかどうかを判断
+    for row in candidates.iter_rows(named=True):
         if row["refund_id"] in matched_refund_ids:
             continue
+
         desc1 = clean(row["expense_description"])
         desc2 = clean(row["refund_description"])
 
@@ -125,14 +146,17 @@ def prepare_and_save_data(con: duckdb.DuckDBPyConnection) -> duckdb.DuckDBPyConn
             matched_refund_ids.add(row["refund_id"])
             canceled_expense_ids.add(row["expense_id"])
 
-    valid_expenses: pd.DataFrame = con.sql("SELECT * FROM expenses").df()
-    valid_refunds: pd.DataFrame = con.sql("SELECT * FROM refunds").df()
+    # 有効な支出と返金のデータフレームを取得
+    valid_expenses = con.sql("SELECT * FROM expenses").pl()
+    valid_refunds = con.sql("SELECT * FROM refunds").pl()
 
     con.close()
 
-    valid_expenses = valid_expenses[~valid_expenses["id"].isin(canceled_expense_ids)]
-    valid_refunds = valid_refunds[~valid_refunds["id"].isin(matched_refund_ids)]
+    # キャンセルされた項目を除外
+    valid_expenses = valid_expenses.filter(~pl.col("id").is_in(list(canceled_expense_ids)))
+    valid_refunds = valid_refunds.filter(~pl.col("id").is_in(list(matched_refund_ids)))
 
+    # 新しいDuckDB接続を作成し、処理済みのデータフレームを登録
     con2: duckdb.DuckDBPyConnection = duckdb.connect()
     con2.register("valid_expenses", valid_expenses)
     con2.register("valid_refunds", valid_refunds)

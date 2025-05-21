@@ -1,7 +1,6 @@
 # moneyforward-expense-csv-visualization
 
 マネーフォワード MEからダウンロードされる月別/年別の支出ファイルを可視化します。
-すべての処理はメモリ上で実施されます。
 
 ![demo](https://raw.githubusercontent.com/wiki/yqhr/moneyforward-expense-csv-visualization/images/demo.gif)
 

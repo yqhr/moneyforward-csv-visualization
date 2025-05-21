@@ -6,9 +6,9 @@ readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "duckdb>=1.2.2",
-    "fireducks>=1.2.8",
     "fsspec>=2025.3.2",
     "plotly>=6.0.1",
+    "polars>=1.29.0",
     "rapidfuzz>=3.13.0",
     "streamlit>=1.45.0",
     "watchdog>=6.0.0",

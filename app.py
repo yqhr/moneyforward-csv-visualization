@@ -3,7 +3,7 @@ import plotly.graph_objects as go
 import plotly.express as px
 from prepare_data import prepare_and_save_data, convert_mf_csv_to_duckdb
 import duckdb
-import fireducks.pandas as pd
+import polars as pl
 from typing import List, Tuple, Optional
 from streamlit.runtime.uploaded_file_manager import UploadedFile
 
@@ -16,12 +16,12 @@ def _load_csvs(files: List[UploadedFile]) -> duckdb.DuckDBPyConnection:
     return con
 
 @st.cache_data(show_spinner=True)
-def load_and_processed_data(files: List[UploadedFile]) -> Tuple[pd.DataFrame, pd.DataFrame]:
+def load_and_processed_data(files: List[UploadedFile]) -> Tuple[pl.DataFrame, pl.DataFrame]:
     con: duckdb.DuckDBPyConnection = _load_csvs(files)
     con2: duckdb.DuckDBPyConnection = prepare_and_save_data(con)
     con.close()
 
-    expenses: pd.DataFrame = con2.execute(
+    expenses: pl.DataFrame = con2.execute(
         """
         SELECT
             *,
@@ -29,9 +29,9 @@ def load_and_processed_data(files: List[UploadedFile]) -> Tuple[pd.DataFrame, pd
             strftime(date, '%Y') AS year
         FROM expenses;
         """
-    ).df()
+    ).pl()
 
-    refunds: pd.DataFrame = con2.execute(
+    refunds: pl.DataFrame = con2.execute(
         """
         SELECT
             *,
@@ -39,7 +39,7 @@ def load_and_processed_data(files: List[UploadedFile]) -> Tuple[pd.DataFrame, pd
             strftime(date, '%Y') AS year
         FROM refunds;
         """
-    ).df()
+    ).pl()
 
     con2.close()
     return expenses, refunds
@@ -55,8 +55,8 @@ if not files:
     st.info("Please add MoneyForward data using the **📤 CSV Upload** in the upper left.")
     st.stop()
 
-expenses: pd.DataFrame
-refunds: pd.DataFrame
+expenses: pl.DataFrame
+refunds: pl.DataFrame
 expenses, refunds = load_and_processed_data(files)
 
 # 表示タイプの選択
@@ -64,15 +64,15 @@ display_type: str = st.selectbox("Select display type", ["Monthly", "Yearly"])
 
 # 月別表示部分
 if display_type == "Monthly":
-    month_options: List[str] = sorted(expenses["month"].dropna().unique())
+    month_options: List[str] = sorted(expenses.select("month").filter(pl.col("month").is_not_null()).unique().to_series().to_list())
     selected_months: List[str] = st.multiselect(
         "Select months", month_options, default=[month_options[-1]]
     )
     if len(selected_months) == 0:
         st.stop()
 
-    expenses_month: pd.DataFrame = expenses[expenses["month"].isin(selected_months)]
-    refunds_month: pd.DataFrame = refunds[refunds["month"].isin(selected_months)]
+    expenses_month: pl.DataFrame = expenses.filter(pl.col("month").is_in(selected_months))
+    refunds_month: pl.DataFrame = refunds.filter(pl.col("month").is_in(selected_months))
 
     selected_month_label: str = (
         ", ".join(selected_months)
@@ -81,23 +81,29 @@ if display_type == "Monthly":
     )
 
     # カテゴリー別の純支出を計算
-    summary: pd.DataFrame = (
-        expenses_month.groupby("category_main")["amount"]
-        .sum()
-        .abs()
-        .to_frame(name="expense")
-    )
-    summary["refund"] = refunds_month.groupby("category_main")["amount"].sum()
-    summary.fillna(0, inplace=True)
-    summary = (
-        summary[summary["expense"] > 0]
-        .sort_values("expense", ascending=False)
-        .reset_index()
+    summary: pl.DataFrame = (
+        expenses_month.group_by("category_main")
+        .agg(pl.col("amount").abs().sum().alias("expense"))
+        .sort("expense", descending=True)
+        .filter(pl.col("expense") > 0)
     )
 
+    refund_by_cat = (
+        refunds_month.group_by("category_main")
+        .agg(pl.col("amount").sum().alias("refund"))
+    )
+
+    # 左外部結合で返金データを追加
+    summary = summary.join(refund_by_cat, on="category_main", how="left").fill_null(0)
+
     # パーセンテージと累積値を計算
-    summary["percentage"] = summary["expense"] / summary["expense"].sum() * 100
-    summary["cumulative_percentage"] = summary["percentage"].cumsum()
+    total_expense = summary["expense"].sum()
+    summary = summary.with_columns([
+        (pl.col("expense") / total_expense * 100).alias("percentage"),
+    ])
+    summary = summary.with_columns([
+        pl.col("percentage").cum_sum().alias("cumulative_percentage")
+    ])
 
     # パレート図
     fig = go.Figure()
@@ -159,7 +165,7 @@ if display_type == "Monthly":
             x=summary["expense"],
             y=summary["category_main"],
             orientation="h",
-            text=summary["percentage"].map("{:.1f}%".format),
+            text=[f"{p:.1f}%" for p in summary["percentage"]],
             textposition="outside",
         )
     )
@@ -170,16 +176,12 @@ if display_type == "Monthly":
     )
 
     # 月次支出の積み上げエリアチャート
-    monthly_portfolio: pd.DataFrame = (
+    monthly_portfolio = (
         expenses_month
-        .groupby(["date", "category_main"])["amount"]
-        .sum()
-        .abs()
-        .reset_index()
+        .group_by(["date", "category_main"])
+        .agg(pl.col("amount").abs().sum())
+        .sort("date")
     )
-
-    # 正しく表示するために日付でソート
-    monthly_portfolio = monthly_portfolio.sort_values("date")
 
     fig_stacked_area = px.area(
         monthly_portfolio,
@@ -190,23 +192,16 @@ if display_type == "Monthly":
         labels={"amount": "Expense (JPY)", "date": "Date", "category_main": "Category"},
     )
 
-    # 週次の積み上げエリアチャートを追加
-    weekly_portfolio: pd.DataFrame = (
+    # 週次の積み上げエリアチャート
+    weekly_portfolio = (
         expenses_month
-        .assign(week=lambda x: pd.to_datetime(x["date"]).dt.strftime("%Y-%U"))
-        .groupby(["week", "category_main"])["amount"]
-        .sum()
-        .abs()
-        .reset_index()
+        .with_columns(
+            pl.col("date").dt.truncate("1w").alias("week_date")
+        )
+        .group_by(["week_date", "category_main"])
+        .agg(pl.col("amount").abs().sum())
+        .sort("week_date")
     )
-
-    # 週番号を実際の日付（週の初日）に変換
-    weekly_portfolio["week_date"] = pd.to_datetime(
-        weekly_portfolio["week"].apply(
-            lambda x: f"{x.split('-')[0]}-W{x.split('-')[1]}-1"
-        ), format="%Y-W%W-%w"
-    )
-    weekly_portfolio = weekly_portfolio.sort_values("week_date")
 
     fig_weekly_area = px.area(
         weekly_portfolio,
@@ -219,8 +214,8 @@ if display_type == "Monthly":
 
     # 箱ひげ図
     # 日付ごとのカテゴリ別データを準備
-    daily_by_category = expenses_month.copy()
-    daily_by_category["amount"] = daily_by_category["amount"].abs()
+    daily_by_category = expenses_month.with_columns(pl.col("amount").abs().alias("amount"))
+
     # 大項目ごとの箱ひげ図
     fig_box_main = px.box(
         daily_by_category,
@@ -253,15 +248,21 @@ if display_type == "Monthly":
 
     # メインカテゴリの選択とサブカテゴリの内訳（円グラフ + 水平棒グラフ）
     selected_category: str = st.selectbox(
-        "Select a main category to view breakdown", summary["category_main"]
+        "Select a main category to view breakdown", summary["category_main"].to_list()
     )
 
-    sub_data: pd.DataFrame = expenses_month[expenses_month["category_main"] == selected_category]
-    sub_summary: pd.DataFrame = sub_data.groupby("category_sub")["amount"].sum().abs().reset_index()
-    sub_summary["percentage"] = (
-        sub_summary["amount"] / sub_summary["amount"].sum() * 100
+    sub_data: pl.DataFrame = expenses_month.filter(pl.col("category_main") == selected_category)
+    sub_summary: pl.DataFrame = (
+        sub_data.group_by("category_sub")
+        .agg(pl.col("amount").abs().sum().alias("amount"))
+        .sort("amount", descending=True)
     )
-    sub_summary = sub_summary.sort_values("amount", ascending=False)
+
+    # サブカテゴリごとの割合を計算
+    total_sub_amount = sub_summary["amount"].sum()
+    sub_summary = sub_summary.with_columns(
+        (pl.col("amount") / total_sub_amount * 100).alias("percentage")
+    )
 
     if len(sub_summary) > 0:
         col1, col2 = st.columns(2)
@@ -286,7 +287,7 @@ if display_type == "Monthly":
                     x=sub_summary["amount"],
                     y=sub_summary["category_sub"],
                     orientation="h",
-                    text=sub_summary["percentage"].map("{:.1f}%".format),
+                    text=[f"{p:.1f}%" for p in sub_summary["percentage"]],
                     textposition="outside",
                 )
             )
@@ -296,6 +297,11 @@ if display_type == "Monthly":
                 yaxis_title="",
             )
 
+        # パレート図用に累積パーセンテージを計算
+        sub_summary = sub_summary.with_columns(
+            pl.col("percentage").cum_sum().alias("cumulative_percentage")
+        )
+
         fig_pareto = go.Figure()
         fig_pareto.add_bar(
             x=sub_summary["category_sub"], y=sub_summary["amount"], name="Expense"
@@ -303,7 +309,7 @@ if display_type == "Monthly":
         fig_pareto.add_trace(
             go.Scatter(
                 x=sub_summary["category_sub"],
-                y=sub_summary["percentage"].cumsum(),
+                y=sub_summary["cumulative_percentage"],
                 mode="lines+markers",
                 name="Cumulative %",
                 yaxis="y2",
@@ -339,17 +345,16 @@ if display_type == "Monthly":
         )
 
         # サブカテゴリの月次積み上げエリアチャート
-        sub_monthly_portfolio: pd.DataFrame = (
+        sub_monthly_portfolio = (
             sub_data
-            .groupby(["month", "category_sub"])["amount"]
-            .sum()
-            .abs()
-            .reset_index()
+            .group_by(["month", "category_sub"])
+            .agg(pl.col("amount").abs().sum())
         )
 
         # 日付順にソート
-        sub_monthly_portfolio["month_date"] = pd.to_datetime(sub_monthly_portfolio["month"] + "-01")
-        sub_monthly_portfolio = sub_monthly_portfolio.sort_values("month_date")
+        sub_monthly_portfolio = sub_monthly_portfolio.with_columns(
+            pl.col("month").str.strptime(pl.Date, "%Y-%m").alias("month_date")
+        ).sort("month_date")
 
         fig_sub_monthly_area = px.area(
             sub_monthly_portfolio,
@@ -360,23 +365,16 @@ if display_type == "Monthly":
             labels={"amount": "Expense (JPY)", "month": "Month", "category_sub": "Subcategory"},
         )
 
-        # サブカテゴリの週次積み上げエリアチャート - これは既存のコードを再利用
-        sub_weekly_portfolio: pd.DataFrame = (
+        # サブカテゴリの週次積み上げエリアチャート
+        sub_weekly_portfolio = (
             sub_data
-            .assign(week=lambda x: pd.to_datetime(x["date"]).dt.strftime("%Y-%U"))
-            .groupby(["week", "category_sub"])["amount"]
-            .sum()
-            .abs()
-            .reset_index()
+            .with_columns(
+                pl.col("date").dt.truncate("1w").alias("week_date")
+            )
+            .group_by(["week_date", "category_sub"])
+            .agg(pl.col("amount").abs().sum())
+            .sort("week_date")
         )
-
-        # 週番号を実際の日付に変換
-        sub_weekly_portfolio["week_date"] = pd.to_datetime(
-            sub_weekly_portfolio["week"].apply(
-                lambda x: f"{x.split('-')[0]}-W{x.split('-')[1]}-1"
-            ), format="%Y-W%W-%w"
-        )
-        sub_weekly_portfolio = sub_weekly_portfolio.sort_values("week_date")
 
         fig_sub_weekly_area = px.area(
             sub_weekly_portfolio,
@@ -388,8 +386,8 @@ if display_type == "Monthly":
         )
 
         # 中項目の箱ひげ図
-        sub_data_for_box = sub_data.copy()
-        sub_data_for_box["amount"] = sub_data_for_box["amount"].abs()
+        sub_data_for_box = sub_data.with_columns(pl.col("amount").abs().alias("amount"))
+
         fig_box_sub = px.box(
             sub_data_for_box,
             x="category_sub",
@@ -422,33 +420,24 @@ if display_type == "Monthly":
             st.plotly_chart(fig_box_sub, use_container_width=True)
 
         with st.container():
-            detail_df: pd.DataFrame = expenses_month[
-                expenses_month["category_main"] == selected_category
-            ]
-            category_sub_options: List[str] = ["All"] + sorted(
-                detail_df["category_sub"].dropna().unique()
+            detail_df = expenses_month.filter(pl.col("category_main") == selected_category)
+            category_sub_options = ["All"] + sorted(
+                detail_df.select("category_sub").filter(pl.col("category_sub").is_not_null()).unique().to_series().to_list()
             )
             selected_sub: str = st.selectbox(
                 "Select subcategory", category_sub_options
             )
             if selected_sub != "All":
-                detail_df = detail_df[detail_df["category_sub"] == selected_sub]
-            detail_df = detail_df[
-                [
-                    "date",
-                    "description",
-                    "amount",
-                    "category_main",
-                    "category_sub",
-                    "memo",
-                ]
-            ]
-            detail_df = detail_df.sort_values("date")
+                detail_df = detail_df.filter(pl.col("category_sub") == selected_sub)
+
+            detail_df = detail_df.select(
+                "date", "description", "amount", "category_main", "category_sub", "memo"
+            ).sort("date")
+
             st.markdown("#### Transaction Details")
             st.data_editor(detail_df, use_container_width=True, height=300)
 
-            detail_df_desc = detail_df.copy()
-            detail_df_desc["amount"] = detail_df_desc["amount"].abs()
+            detail_df_desc = detail_df.with_columns(pl.col("amount").abs().alias("amount"))
 
             fig_box_desc = px.box(
                 detail_df_desc,
@@ -468,10 +457,10 @@ if display_type == "Monthly":
         st.info("No subcategory data found.")
 
 if display_type == "Yearly":
-    year_options: List[str] = sorted(expenses["year"].dropna().unique())
-    year_options_int: List[int] = [int(y) for y in year_options]
+    year_options = sorted(expenses.select("year").filter(pl.col("year").is_not_null()).unique().to_series().to_list())
+    year_options_int = [int(y) for y in year_options]
 
-    selected_years: List[int] = st.multiselect(
+    selected_years = st.multiselect(
         "Select years",
         options=year_options_int,
         default=[max(year_options_int)],  # デフォルトは最新の年
@@ -486,25 +475,26 @@ if display_type == "Yearly":
         else f"{min(selected_years)}–{max(selected_years)}"
     )
 
-    # DataFrameの型を明示的に定義
-    expenses_year: pd.DataFrame = expenses[
-        expenses["year"].astype(int).isin(selected_years)
-    ]
-    summary: pd.DataFrame = (
-        expenses_year.groupby("category_main")["amount"]
-        .sum()
-        .abs()
-        .to_frame(name="expense")
-    )
-    summary.fillna(0, inplace=True)
+    # 年別データの抽出
+    expenses_year = expenses.filter(pl.col("year").cast(pl.Int32).is_in(selected_years))
+
+    # 集計
     summary = (
-        summary[summary["expense"] > 0]
-        .sort_values("expense", ascending=False)
-        .reset_index()
+        expenses_year
+        .group_by("category_main")
+        .agg(pl.col("amount").abs().sum().alias("expense"))
+        .filter(pl.col("expense") > 0)
+        .sort("expense", descending=True)
     )
 
-    summary["percentage"] = summary["expense"] / summary["expense"].sum() * 100
-    summary["cumulative_percentage"] = summary["percentage"].cumsum()
+    # パーセンテージと累積値を計算
+    total_expense = summary["expense"].sum()
+    summary = summary.with_columns([
+        (pl.col("expense") / total_expense * 100).alias("percentage"),
+    ])
+    summary = summary.with_columns([
+        pl.col("percentage").cum_sum().alias("cumulative_percentage")
+    ])
 
     fig = go.Figure()
     fig.add_bar(
@@ -565,7 +555,7 @@ if display_type == "Yearly":
             x=summary["expense"],
             y=summary["category_main"],
             orientation="h",
-            text=summary["percentage"].map("{:.1f}%".format),
+            text=[f"{p:.1f}%" for p in summary["percentage"]],
             textposition="outside",
         )
     )
@@ -576,17 +566,16 @@ if display_type == "Yearly":
     )
 
     # 月別の年間支出の積み上げエリアチャート
-    yearly_portfolio: pd.DataFrame = (
+    yearly_portfolio = (
         expenses_year
-        .groupby(["month", "category_main"])["amount"]
-        .sum()
-        .abs()
-        .reset_index()
+        .group_by(["month", "category_main"])
+        .agg(pl.col("amount").abs().sum())
     )
 
-    # 日付順にソートしてグラフが正しく表示されるようにする
-    yearly_portfolio["month_date"] = pd.to_datetime(yearly_portfolio["month"] + "-01")
-    yearly_portfolio = yearly_portfolio.sort_values("month_date")
+    # 日付順にソート
+    yearly_portfolio = yearly_portfolio.with_columns(
+        pl.col("month").str.strptime(pl.Date, "%Y-%m").alias("month_date")
+    ).sort("month_date")
 
     fig_stacked_area = px.area(
         yearly_portfolio,
@@ -598,36 +587,29 @@ if display_type == "Yearly":
     )
 
     # 週ごとの積み上げ面グラフを追加
-    weekly_yearly_portfolio: pd.DataFrame = (
+    weekly_yearly_portfolio = (
         expenses_year
-        .assign(week=lambda x: pd.to_datetime(x["date"]).dt.strftime("%Y-%U"))
-        .groupby(["week", "category_main"])["amount"]
-        .sum()
-        .abs()
-        .reset_index()
+        .with_columns(
+            pl.col("date").dt.truncate("1w").alias("week_date")
+        )
+        .group_by(["week_date", "category_main"])
+        .agg(pl.col("amount").abs().sum())
+        .sort("week_date")
     )
-
-    # 週番号を実際の日付に変換
-    weekly_yearly_portfolio["week_date"] = pd.to_datetime(
-        weekly_yearly_portfolio["week"].apply(
-            lambda x: f"{x.split('-')[0]}-W{x.split('-')[1]}-1"
-        ), format="%Y-W%W-%w"
-    )
-    weekly_yearly_portfolio = weekly_yearly_portfolio.sort_values("week_date")
 
     fig_weekly_yearly_area = px.area(
         weekly_yearly_portfolio,
-        x="week",
+        x="week_date",
         y="amount",
         color="category_main",
         title=f"Weekly Expense Portfolio - {selected_year_label}",
-        labels={"amount": "Expense (JPY)", "week": "Week", "category_main": "Category"},
+        labels={"amount": "Expense (JPY)", "week_date": "Week", "category_main": "Category"},
     )
 
     # 箱ひげ図
     # 日付ごとのカテゴリ別データを準備
-    daily_by_category = expenses_year.copy()
-    daily_by_category["amount"] = daily_by_category["amount"].abs()
+    daily_by_category = expenses_year.with_columns(pl.col("amount").abs().alias("amount"))
+
     # 大項目ごとの箱ひげ図
     fig_box_main = px.box(
         daily_by_category,
@@ -659,15 +641,21 @@ if display_type == "Yearly":
         st.plotly_chart(fig_box_main, use_container_width=True)
 
     selected_category: str = st.selectbox(
-        "Select a main category to view breakdown", summary["category_main"]
+        "Select a main category to view breakdown", summary["category_main"].to_list()
     )
 
-    sub_data: pd.DataFrame = expenses_year[expenses_year["category_main"] == selected_category]
-    sub_summary: pd.DataFrame = sub_data.groupby("category_sub")["amount"].sum().abs().reset_index()
-    sub_summary["percentage"] = (
-        sub_summary["amount"] / sub_summary["amount"].sum() * 100
+    sub_data = expenses_year.filter(pl.col("category_main") == selected_category)
+    sub_summary = (
+        sub_data.group_by("category_sub")
+        .agg(pl.col("amount").abs().sum().alias("amount"))
+        .sort("amount", descending=True)
     )
-    sub_summary = sub_summary.sort_values("amount", ascending=False)
+
+    # サブカテゴリごとの割合を計算
+    total_sub_amount = sub_summary["amount"].sum()
+    sub_summary = sub_summary.with_columns(
+        (pl.col("amount") / total_sub_amount * 100).alias("percentage")
+    )
 
     if len(sub_summary) > 0:
         col1, col2 = st.columns(2)
@@ -692,7 +680,7 @@ if display_type == "Yearly":
                     x=sub_summary["amount"],
                     y=sub_summary["category_sub"],
                     orientation="h",
-                    text=sub_summary["percentage"].map("{:.1f}%".format),
+                    text=[f"{p:.1f}%" for p in sub_summary["percentage"]],
                     textposition="outside",
                 )
             )
@@ -702,6 +690,11 @@ if display_type == "Yearly":
                 yaxis_title="",
             )
 
+        # パレート図用に累積パーセンテージを計算
+        sub_summary = sub_summary.with_columns(
+            pl.col("percentage").cum_sum().alias("cumulative_percentage")
+        )
+
         fig_pareto = go.Figure()
         fig_pareto.add_bar(
             x=sub_summary["category_sub"], y=sub_summary["amount"], name="Expense"
@@ -709,7 +702,7 @@ if display_type == "Yearly":
         fig_pareto.add_trace(
             go.Scatter(
                 x=sub_summary["category_sub"],
-                y=sub_summary["percentage"].cumsum(),
+                y=sub_summary["cumulative_percentage"],
                 mode="lines+markers",
                 name="Cumulative %",
                 yaxis="y2",
@@ -745,17 +738,16 @@ if display_type == "Yearly":
         )
 
         # サブカテゴリの月次積み上げエリアチャート
-        sub_monthly_portfolio: pd.DataFrame = (
+        sub_monthly_portfolio = (
             sub_data
-            .groupby(["month", "category_sub"])["amount"]
-            .sum()
-            .abs()
-            .reset_index()
+            .group_by(["month", "category_sub"])
+            .agg(pl.col("amount").abs().sum())
         )
 
         # 日付順にソート
-        sub_monthly_portfolio["month_date"] = pd.to_datetime(sub_monthly_portfolio["month"] + "-01")
-        sub_monthly_portfolio = sub_monthly_portfolio.sort_values("month_date")
+        sub_monthly_portfolio = sub_monthly_portfolio.with_columns(
+            pl.col("month").str.strptime(pl.Date, "%Y-%m").alias("month_date")
+        ).sort("month_date")
 
         fig_sub_monthly_area = px.area(
             sub_monthly_portfolio,
@@ -767,22 +759,15 @@ if display_type == "Yearly":
         )
 
         # サブカテゴリの週次積み上げエリアチャート
-        sub_weekly_portfolio: pd.DataFrame = (
+        sub_weekly_portfolio = (
             sub_data
-            .assign(week=lambda x: pd.to_datetime(x["date"]).dt.strftime("%Y-%U"))
-            .groupby(["week", "category_sub"])["amount"]
-            .sum()
-            .abs()
-            .reset_index()
+            .with_columns(
+                pl.col("date").dt.truncate("1w").alias("week_date")
+            )
+            .group_by(["week_date", "category_sub"])
+            .agg(pl.col("amount").abs().sum())
+            .sort("week_date")
         )
-
-        # 週番号を実際の日付に変換
-        sub_weekly_portfolio["week_date"] = pd.to_datetime(
-            sub_weekly_portfolio["week"].apply(
-                lambda x: f"{x.split('-')[0]}-W{x.split('-')[1]}-1"
-            ), format="%Y-W%W-%w"
-        )
-        sub_weekly_portfolio = sub_weekly_portfolio.sort_values("week_date")
 
         fig_sub_weekly_area = px.area(
             sub_weekly_portfolio,
@@ -794,8 +779,8 @@ if display_type == "Yearly":
         )
 
         # 中項目の箱ひげ図
-        sub_data_for_box = sub_data.copy()
-        sub_data_for_box["amount"] = sub_data_for_box["amount"].abs()
+        sub_data_for_box = sub_data.with_columns(pl.col("amount").abs().alias("amount"))
+
         fig_box_sub = px.box(
             sub_data_for_box,
             x="category_sub",
@@ -827,33 +812,24 @@ if display_type == "Yearly":
             st.plotly_chart(fig_box_sub, use_container_width=True)
 
         with st.container():
-            detail_df: pd.DataFrame = expenses_year[
-                expenses_year["category_main"] == selected_category
-            ]
-            category_sub_options: List[str] = ["All"] + sorted(
-                detail_df["category_sub"].dropna().unique()
+            detail_df = expenses_year.filter(pl.col("category_main") == selected_category)
+            category_sub_options = ["All"] + sorted(
+                detail_df.select("category_sub").filter(pl.col("category_sub").is_not_null()).unique().to_series().to_list()
             )
             selected_sub: str = st.selectbox(
                 "Select subcategory", category_sub_options
             )
             if selected_sub != "All":
-                detail_df = detail_df[detail_df["category_sub"] == selected_sub]
-            detail_df = detail_df[
-                [
-                    "date",
-                    "description",
-                    "amount",
-                    "category_main",
-                    "category_sub",
-                    "memo",
-                ]
-            ]
-            detail_df = detail_df.sort_values("date")
+                detail_df = detail_df.filter(pl.col("category_sub") == selected_sub)
+
+            detail_df = detail_df.select(
+                "date", "description", "amount", "category_main", "category_sub", "memo"
+            ).sort("date")
+
             st.markdown("#### Transaction Details")
             st.data_editor(detail_df, use_container_width=True, height=300)
 
-            detail_df_desc = detail_df.copy()
-            detail_df_desc["amount"] = detail_df_desc["amount"].abs()
+            detail_df_desc = detail_df.with_columns(pl.col("amount").abs().alias("amount"))
 
             fig_box_desc = px.box(
                 detail_df_desc,
