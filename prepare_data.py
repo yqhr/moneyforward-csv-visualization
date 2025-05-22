@@ -1,10 +1,8 @@
 import polars as pl
-import duckdb
 from rapidfuzz import fuzz
 from typing import Dict, Set, List
 from streamlit.runtime.uploaded_file_manager import UploadedFile
-import tempfile
-import os
+from datetime import timedelta
 
 COLUMN_MAP: Dict[str, str] = {
     "計算対象":   "include",
@@ -19,150 +17,95 @@ COLUMN_MAP: Dict[str, str] = {
     "ID":        "id",
 }
 
-def convert_mf_csv_to_duckdb(files: List[UploadedFile]) -> duckdb.DuckDBPyConnection:
-    con: duckdb.DuckDBPyConnection = duckdb.connect()
+CSV_SCHEMA: Dict[str, type[pl.Int64] | type[pl.String] | type[pl.Float64]] = {
+    "計算対象": pl.Int64,
+    "日付": pl.String,
+    "内容": pl.String,
+    "金額（円）": pl.Float64,
+    "保有金融機関": pl.String,
+    "大項目": pl.String,
+    "中項目": pl.String,
+    "メモ": pl.String,
+    "振替": pl.String,
+    "ID": pl.String
+}
 
-    # 一時ディレクトリを作成
-    with tempfile.TemporaryDirectory() as temp_dir:
-        for idx, f in enumerate(files):
-            # 一時ファイルパスを作成
-            temp_file_path = os.path.join(temp_dir, f"temp_csv_{idx}.csv")
+def convert_mf_csv_to_polars(files: List[UploadedFile]) -> pl.DataFrame:
+    dfs = []
+    for f in files:
+        df = pl.read_csv(f,
+                         encoding="utf8",
+                         schema_overrides=CSV_SCHEMA)
+        dfs += [df]
+    if dfs:
+        df = pl.concat(dfs, how="vertical")
+        # 列名を日本語→英語に変換
+        return df.rename({jp: en for jp, en in COLUMN_MAP.items() if jp in df.columns})
+    else:
+        return pl.DataFrame()
 
-            # アップロードされたファイルの内容を一時ファイルに書き込む
-            with open(temp_file_path, 'wb') as temp_file:
-                temp_file.write(f.read())
-
-            # ファイルポインタをリセット（他の場所でも使用できるように）
-            f.seek(0)
-
-            # DuckDBに一時ファイルを読み込ませる
-            rel = con.read_csv(
-                temp_file_path,
-                header=True,
-                sample_size=-1
-            )
-
-            select_expr: str = ",\n            ".join(
-                f'"{jp}" AS {en}' for jp, en in COLUMN_MAP.items()
-            )
-            rel = con.sql(f"SELECT {select_expr} FROM rel")
-
-            if idx == 0:
-                rel.create("transactions")
-            else:
-                con.sql("INSERT INTO transactions SELECT * FROM rel")
-
-    return con
-
-def prepare_and_save_data(con: duckdb.DuckDBPyConnection) -> duckdb.DuckDBPyConnection:
+def prepare_and_save_data(df: pl.DataFrame) -> tuple[pl.DataFrame, pl.DataFrame]:
     def clean(text: str) -> str:
-        if text is None or isinstance(text, float) and pl.Series([text]).is_null().item():
+        if text is None or (isinstance(text, float) and pl.Series([text]).is_null().item()):
             return ""
         return str(text).strip().replace("　", "")
 
-    # トランザクションから支出と返金を分離
-    con.sql(
-        "CREATE OR REPLACE TABLE expenses AS SELECT * FROM transactions WHERE include = 1 AND amount < 0;"
-    )
-    con.sql(
-        "CREATE OR REPLACE TABLE refunds AS SELECT * FROM transactions WHERE include = 1 AND amount > 0;"
-    )
+    # 必要なカラム型変換
+    df = df.with_columns([
+        pl.col("amount").cast(pl.Float64),
+        pl.col("include").cast(pl.Int64),
+        pl.col("id").cast(pl.Utf8),
+        pl.col("date").str.strptime(pl.Date, "%Y/%m/%d", strict=False)
+    ])
 
-    # 返金が支出のキャンセルである候補を検索
-    candidates = con.execute(
-        """
-        -- ① 計算済みテーブルをセッション内に作成
-        CREATE TEMP TABLE expenses_pre AS
-        SELECT
-            id,
-            description,
-            date,
-            ABS(amount) AS abs_amount
-        FROM expenses;
+    # 支出・返金に分離
+    expenses = df.filter((pl.col("include") == 1) & (pl.col("amount") < 0))
+    refunds = df.filter((pl.col("include") == 1) & (pl.col("amount") > 0))
 
-        CREATE TEMP TABLE refunds_pre AS
-        SELECT
-            id,
-            description,
-            date,
-            ABS(amount) AS abs_amount
-        FROM refunds;
-
-        -- ② 範囲検索に効くインデックスを貼る
-        CREATE INDEX idx_expenses_abs_date ON expenses_pre(abs_amount, date);
-        CREATE INDEX idx_refunds_abs_date  ON refunds_pre (abs_amount, date);
-
-        -- ③ JOIN クエリ（±100 円の例）
-        SELECT
-            e.id AS expense_id,
-            r.id AS refund_id,
-            e.description AS expense_description,
-            r.description AS refund_description
-        FROM expenses_pre e
-        JOIN refunds_pre  r
-        ON r.date BETWEEN e.date - INTERVAL '14 DAY'
-                       AND e.date + INTERVAL '14 DAY'
-        AND r.abs_amount BETWEEN e.abs_amount - 100
-                              AND e.abs_amount + 100
-
-        UNION ALL
-
-        -- ④ ±5 %
-        SELECT
-            e.id,
-            r.id,
-            e.description,
-            r.description
-        FROM expenses_pre e
-        JOIN refunds_pre  r
-        ON r.date BETWEEN e.date - INTERVAL '14 DAY'
-                       AND e.date + INTERVAL '14 DAY'
-        AND r.abs_amount BETWEEN e.abs_amount * 0.95
-                              AND e.abs_amount * 1.05;
-        """
-    ).pl()  # duckdb結果をpolarsデータフレームとして取得
-
-    # 一致した返金IDと対応する支出IDを保持する集合
+    # 返金が支出のキャンセルである候補を探す
     matched_refund_ids: Set[str] = set()
     canceled_expense_ids: Set[str] = set()
 
-    # 各候補の説明文の類似度を計算して、キャンセルと見なすかどうかを判断
-    for row in candidates.iter_rows(named=True):
-        if row["refund_id"] in matched_refund_ids:
+    # 返金候補の探索（±100円または±5%、日付±14日、説明類似度0.8以上）
+    for exp in expenses.iter_rows(named=True):
+        exp_date = exp["date"]
+        exp_abs_amount = abs(exp["amount"])
+        exp_desc = clean(exp["description"])
+        if not exp_desc or exp_desc.lower() == "nan":
             continue
 
-        desc1 = clean(row["expense_description"])
-        desc2 = clean(row["refund_description"])
+        # 日付の加減算はPythonのdatetime.dateで行う
+        date_min = exp_date - timedelta(days=14)
+        date_max = exp_date + timedelta(days=14)
 
-        if not desc1 or not desc2 or desc1.lower() == "nan" or desc2.lower() == "nan":
-            continue
+        refund_candidates = refunds.filter(
+            (pl.col("date") >= date_min) &
+            (pl.col("date") <= date_max) &
+            (
+                ((pl.col("amount").abs() >= exp_abs_amount - 100) & (pl.col("amount").abs() <= exp_abs_amount + 100)) |
+                ((pl.col("amount").abs() >= exp_abs_amount * 0.95) & (pl.col("amount").abs() <= exp_abs_amount * 1.05))
+            )
+        )
 
-        combined = [desc1, desc2]
-        if all(len(word) < 2 for doc in combined for word in doc.split()):
-            continue
-
-        sim = fuzz.token_set_ratio(desc1, desc2) / 100.0
-        if sim >= 0.8:
-            matched_refund_ids.add(row["refund_id"])
-            canceled_expense_ids.add(row["expense_id"])
-
-    # 有効な支出と返金のデータフレームを取得
-    valid_expenses = con.sql("SELECT * FROM expenses").pl()
-    valid_refunds = con.sql("SELECT * FROM refunds").pl()
-
-    con.close()
+        for ref in refund_candidates.iter_rows(named=True):
+            if ref["id"] in matched_refund_ids:
+                continue
+            ref_desc = clean(ref["description"])
+            if not ref_desc or ref_desc.lower() == "nan":
+                continue
+            if all(len(word) < 2 for doc in [exp_desc, ref_desc] for word in doc.split()):
+                continue
+            sim = fuzz.token_set_ratio(exp_desc, ref_desc) / 100.0
+            if sim >= 0.8:
+                matched_refund_ids.add(ref["id"])
+                canceled_expense_ids.add(exp["id"])
+                break  # 1つマッチしたら次の支出へ
 
     # キャンセルされた項目を除外
-    valid_expenses = valid_expenses.filter(~pl.col("id").is_in(list(canceled_expense_ids)))
-    valid_refunds = valid_refunds.filter(~pl.col("id").is_in(list(matched_refund_ids)))
+    valid_expenses = expenses.filter(~pl.col("id").is_in(list(canceled_expense_ids)))
+    valid_refunds = refunds.filter(~pl.col("id").is_in(list(matched_refund_ids)))
 
-    # 新しいDuckDB接続を作成し、処理済みのデータフレームを登録
-    con2: duckdb.DuckDBPyConnection = duckdb.connect()
-    con2.register("valid_expenses", valid_expenses)
-    con2.register("valid_refunds", valid_refunds)
-    con2.execute("CREATE OR REPLACE TABLE expenses AS SELECT * FROM valid_expenses")
-    con2.execute("CREATE OR REPLACE TABLE refunds AS SELECT * FROM valid_refunds")
-    return con2
+    return valid_expenses, valid_refunds
 
 if __name__ == "__main__":
     pass

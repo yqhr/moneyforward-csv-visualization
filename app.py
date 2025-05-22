@@ -1,47 +1,44 @@
 import streamlit as st
 import plotly.graph_objects as go
 import plotly.express as px
-from prepare_data import prepare_and_save_data, convert_mf_csv_to_duckdb
-import duckdb
+from prepare_data import prepare_and_save_data, convert_mf_csv_to_polars
 import polars as pl
-from typing import List, Tuple
+from typing import List, Tuple, Dict
 from streamlit.runtime.uploaded_file_manager import UploadedFile
+
+
+COLUMN_MAP: Dict[str, str] = {
+    "計算対象":   "include",
+    "日付":       "date",
+    "内容":       "description",
+    "金額（円）": "amount",
+    "保有金融機関": "institution",
+    "大項目":     "category_main",
+    "中項目":     "category_sub",
+    "メモ":       "memo",
+    "振替":       "transfer",
+    "ID":        "id",
+}
+
 
 st.set_page_config(page_title="Expense Analysis", layout="wide")
 
 st.title("Expense Analysis")
 
-def _load_csvs(files: List[UploadedFile]) -> duckdb.DuckDBPyConnection:
-    con: duckdb.DuckDBPyConnection = convert_mf_csv_to_duckdb(files)
-    return con
-
 @st.cache_data(show_spinner=True)
 def load_and_processed_data(files: List[UploadedFile]) -> Tuple[pl.DataFrame, pl.DataFrame]:
-    con: duckdb.DuckDBPyConnection = _load_csvs(files)
-    con2: duckdb.DuckDBPyConnection = prepare_and_save_data(con)
-    con.close()
+    df = convert_mf_csv_to_polars(files)
+    expenses, refunds = prepare_and_save_data(df)
 
-    expenses: pl.DataFrame = con2.execute(
-        """
-        SELECT
-            *,
-            strftime(date, '%Y-%m') AS month,
-            strftime(date, '%Y') AS year
-        FROM expenses;
-        """
-    ).pl()
-
-    refunds: pl.DataFrame = con2.execute(
-        """
-        SELECT
-            *,
-            strftime(date, '%Y-%m') AS month,
-            strftime(date, '%Y') AS year
-        FROM refunds;
-        """
-    ).pl()
-
-    con2.close()
+    # 月・年カラムを追加
+    expenses = expenses.with_columns([
+        pl.col("date").dt.strftime("%Y-%m").alias("month"),
+        pl.col("date").dt.strftime("%Y").alias("year"),
+    ])
+    refunds = refunds.with_columns([
+        pl.col("date").dt.strftime("%Y-%m").alias("month"),
+        pl.col("date").dt.strftime("%Y").alias("year"),
+    ])
     return expenses, refunds
 
 # ファイルアップローダー
@@ -58,6 +55,9 @@ if not files:
 expenses: pl.DataFrame
 refunds: pl.DataFrame
 expenses, refunds = load_and_processed_data(files)
+
+expenses = expenses.unique(subset=[value for _, value in COLUMN_MAP.items()])
+refunds = refunds.unique(subset=[value for _, value in COLUMN_MAP.items()])
 
 # 表示タイプの選択
 display_type: str = st.selectbox("Select display type", ["Monthly", "Yearly"])
@@ -87,14 +87,6 @@ if display_type == "Monthly":
         .sort("expense", descending=True)
         .filter(pl.col("expense") > 0)
     )
-
-    refund_by_cat = (
-        refunds_month.group_by("category_main")
-        .agg(pl.col("amount").sum().alias("refund"))
-    )
-
-    # 左外部結合で返金データを追加
-    summary = summary.join(refund_by_cat, on="category_main", how="left").fill_null(0)
 
     # パーセンテージと累積値を計算
     total_expense = summary["expense"].sum()
